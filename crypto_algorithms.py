@@ -1,18 +1,15 @@
 from inspect import signature
-
 from Crypto.PublicKey import RSA,DSA,ECC
-from Crypto.SelfTest.Protocol.test_ecdh import private_key, public_key
-from Crypto.SelfTest.Signature.test_dss import verifier
 from Crypto.Signature import pkcs1_15,DSS
 from Crypto.Hash import SHA256
 from  gmssl import sm2,func
 
 #RSA算法实现
 class RSAHandler:
-    def generate_keys(selfs):
+    def generate_keys(self):
         key=RSA.generate(2048)
         private_key=key.export_key()
-        public_key=key.publickey().export_key()
+        public_key=key.public_key().export_key()
         return private_key,public_key
 
     def sign(self,private_key,message):
@@ -37,7 +34,7 @@ class DSAHandler:
     def generate_keys(self):
         key=DSA.generate(2048)
         private_key=key.export_key()
-        public_key=key.publickey().export_key()
+        public_key=key.public_key().export_key()
         return private_key,public_key
 
     def sign(self,private_key,message):
@@ -63,7 +60,7 @@ class ECDSAHandler:
     def generate_keys(self):
         key=ECC.generate(curve='P-256')
         private_key=key.export_key(format='PEM')
-        public_key=key.publickey().export_key(format='PEM')
+        public_key=key.public_key().export_key(format='PEM')
         return private_key,public_key
 
     def sign(self,private_key,message):
