@@ -17,108 +17,103 @@ logger = logging.getLogger(__name__)
 
 # ------------------------- SM2 实现（使用 SECP256K1 曲线） -------------------------
 class SM2Handler:
-    def generate_keys(self):
-        """生成 SM2 兼容密钥对（使用 SECP256K1 曲线）"""
+    def generate_keys(self, curve="SECP256K1"):
+        """生成 SM2 兼容密钥对（支持多种椭圆曲线）"""
         try:
-            # 使用 SECP256K1 曲线（与 SM2 最接近的标准曲线）
-            private_key = ec.generate_private_key(ec.SECP256K1(), default_backend())
-
-            # 导出私钥为 32 字节十六进制
+            # 支持多种曲线
+            curve_map = {
+                "SECP256K1": ec.SECP256K1(),
+                "SECP256R1": ec.SECP256R1(),
+                "SECP384R1": ec.SECP384R1()
+            }
+            if curve not in curve_map:
+                raise ValueError(f"Unsupported curve: {curve}")
+            private_key = ec.generate_private_key(curve_map[curve], default_backend())
             private_value = private_key.private_numbers().private_value
-            private_hex = private_value.to_bytes(32, 'big').hex()
-
-            # 导出公钥为非压缩格式（04 + x + y）
+            # 动态计算字节长度，兼容不同曲线
+            key_size_bytes = (private_value.bit_length() + 7) // 8
+            private_hex = private_value.to_bytes(key_size_bytes, 'big').hex()
             public_key_obj = private_key.public_key()
             public_bytes = public_key_obj.public_bytes(
                 Encoding.X962, PublicFormat.UncompressedPoint
             )
             public_hex = public_bytes.hex()
-
-            # 确保返回值不为空
             if not private_hex or not public_hex:
                 raise ValueError("生成的密钥为空")
-
             return private_hex, public_hex
-
         except Exception as e:
             logger.error(f"SM2密钥生成失败：{str(e)}", exc_info=True)
-            raise  # 重新抛出异常，避免返回None
+            raise
 
     # 其他方法保持不变...
 
-    def sign(self, private_key, message):
-        """生成 SM2 签名（修复哈希计算流程）"""
+    def sign(self, private_key, message, curve="SECP256K1"):
+        """生成 SM2 签名（修复哈希计算流程，支持多曲线）"""
         try:
             if not private_key or not message:
                 raise ValueError("私钥或消息不能为空")
-
-            # 解析私钥
+            curve_map = {
+                "SECP256K1": ec.SECP256K1(),
+                "SECP256R1": ec.SECP256R1(),
+                "SECP384R1": ec.SECP384R1()
+            }
+            if curve not in curve_map:
+                raise ValueError(f"Unsupported curve: {curve}")
             private_value = int(private_key, 16)
             private_key_obj = ec.derive_private_key(
-                private_value, ec.SECP256K1(), default_backend()
+                private_value, curve_map[curve], default_backend()
             )
-
-            # 修复：分开调用 update() 和 finalize()
             data = message.encode('utf-8')
             hash_obj = hashes.Hash(hashes.SHA256(), default_backend())
             hash_obj.update(data)
             digest = hash_obj.finalize()
-
-            # 生成签名
             signature = private_key_obj.sign(
                 digest,
                 ec.ECDSA(utils.Prehashed(hashes.SHA256()))
             )
-
-            # 解析签名为 r 和 s
             r, s = utils.decode_dss_signature(signature)
-
             return {
                 "algorithm": "SM2",
                 "message": message,
                 "signature": f"{r:064x}{s:064x}",
                 "timestamp": str(int(time.time()))
             }
-
         except Exception as e:
             logger.error(f"SM2签名失败：{str(e)}", exc_info=True)
             raise
 
-    def verify(self, public_key, message, signature_dict):
-        """验证 SM2 签名（修复哈希计算流程）"""
+    def verify(self, public_key, message, signature_dict, curve="SECP256K1"):
+        """验证 SM2 签名（修复哈希计算流程，支持多曲线）"""
         try:
             if not public_key or not message or not signature_dict:
                 return False
-
-            # 解析公钥
+            curve_map = {
+                "SECP256K1": ec.SECP256K1(),
+                "SECP256R1": ec.SECP256R1(),
+                "SECP384R1": ec.SECP384R1()
+            }
+            if curve not in curve_map:
+                raise ValueError(f"Unsupported curve: {curve}")
             public_bytes = bytes.fromhex(public_key)
             public_key_obj = ec.EllipticCurvePublicKey.from_encoded_point(
-                ec.SECP256K1(), public_bytes
+                curve_map[curve], public_bytes
             )
-
-            # 解析签名
             signature_hex = signature_dict.get("signature", "")
             if len(signature_hex) != 128:
                 raise ValueError("无效的SM2签名长度")
-
             r = int(signature_hex[:64], 16)
             s = int(signature_hex[64:], 16)
             signature = utils.encode_dss_signature(r, s)
-
-            # 修复：分开调用 update() 和 finalize()
             data = message.encode('utf-8')
             hash_obj = hashes.Hash(hashes.SHA256(), default_backend())
             hash_obj.update(data)
             digest = hash_obj.finalize()
-
             public_key_obj.verify(
                 signature,
                 digest,
                 ec.ECDSA(utils.Prehashed(hashes.SHA256()))
             )
-
             return True
-
         except Exception as e:
             logger.error(f"SM2验证失败：{str(e)}", exc_info=True)
             return False
@@ -316,7 +311,10 @@ class PerformanceTester:
             sig_lengths = []
             for _ in range(iterations):
                 start_time = time.perf_counter()
-                signature_dict = handler.sign(private_key, message)
+                if algorithm == "SM2":
+                    signature_dict = handler.sign(private_key, message, curve)
+                else:
+                    signature_dict = handler.sign(private_key, message)
                 sign_times.append(time.perf_counter() - start_time)
 
                 # 计算签名长度
@@ -329,9 +327,15 @@ class PerformanceTester:
             # 3. 签名验证测试
             verify_times = []
             for _ in range(iterations):
-                signature_dict = handler.sign(private_key, message)  # 每次使用新签名
+                if algorithm == "SM2":
+                    signature_dict = handler.sign(private_key, message, curve)
+                else:
+                    signature_dict = handler.sign(private_key, message)
                 start_time = time.perf_counter()
-                handler.verify(public_key, message, signature_dict)
+                if algorithm == "SM2":
+                    handler.verify(public_key, message, signature_dict, curve)
+                else:
+                    handler.verify(public_key, message, signature_dict)
                 verify_times.append(time.perf_counter() - start_time)
 
             # 4. 计算统计结果
@@ -384,7 +388,8 @@ class PerformanceTester:
             self.run_test("ECDSA", curve=curve)
 
         # SM2测试配置
-        self.run_test("SM2", curve="SM2")  # SM2使用固定曲线
+        for curve in ["SECP256K1", "SECP256R1", "SECP384R1"]:
+            self.run_test("SM2", curve=curve)  # SM2支持多曲线
 
     def export_results(self, filename: str = "signature_performance.json") -> None:
         """导出测试结果到JSON文件"""

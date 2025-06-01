@@ -133,6 +133,7 @@ class CryptoExperimentGUI:
         ttk.Label(frame, text="测试结果:").pack(pady=5)
         self.performance_text = scrolledtext.ScrolledText(frame, height=15, width=80)
         self.performance_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.performance_text.configure(font=("Consolas", 11))
 
         # 导出按钮
         ttk.Button(frame, text="导出结果到JSON", command=self.export_test_results).pack(pady=10)
@@ -284,19 +285,22 @@ class CryptoExperimentGUI:
                     for key_size in [1024, 2048, 4096 if algorithm == "RSA" else 3072]:
                         self.tester.run_test(algorithm, key_size=key_size, message_sizes=msg_sizes,
                                              iterations=iterations)
-                else:  # ECDSA, SM2
-                    for curve in ["P-256", "P-384"] if algorithm == "ECDSA" else ["SM2"]:
+                elif algorithm == "ECDSA":
+                    for curve in ["P-256", "P-384"]:
+                        self.tester.run_test(algorithm, curve=curve, message_sizes=msg_sizes, iterations=iterations)
+                elif algorithm == "SM2":
+                    for curve in ["SECP256K1", "SECP256R1", "SECP384R1"]:
                         self.tester.run_test(algorithm, curve=curve, message_sizes=msg_sizes, iterations=iterations)
 
             # 显示结果摘要
             summary = self.tester.get_summary()
-            self.performance_text.insert(tk.END, "\n===== 测试结果摘要 =====\n")
-            self.performance_text.insert(tk.END,
-                                         "算法\t密钥参数\t消息大小(B)\t密钥生成(ms)\t签名(ms)\t验证(ms)\t签名长度(字节)\n")
-            self.performance_text.insert(tk.END, "-" * 100 + "\n")
+            self.performance_text.insert(tk.END, "\n===== Test Result Summary =====\n")
+            header = f"{'Algorithm':<10}{'Key Param':<14}{'Msg Size(B)':<12}{'KeyGen(ms)':<14}{'Sign(ms)':<10}{'Verify(ms)':<12}{'SigLen(B)':<10}\n"
+            self.performance_text.insert(tk.END, header)
+            self.performance_text.insert(tk.END, "-" * 82 + "\n")
 
             for result in summary:
-                line = f"{result['algorithm']}\t{result['key_param']}\t\t{result['message_size']}\t\t{result['avg_key_gen_time_ms']:.3f}\t\t{result['avg_sign_time_ms']:.3f}\t{result['avg_verify_time_ms']:.3f}\t{result['avg_signature_length_bytes']:.1f}\n"
+                line = f"{result['algorithm']:<10}{str(result['key_param']):<14}{str(result['message_size']):<12}{result['avg_key_gen_time_ms']:<14.3f}{result['avg_sign_time_ms']:<10.3f}{result['avg_verify_time_ms']:<12.3f}{result['avg_signature_length_bytes']:<10.1f}\n"
                 self.performance_text.insert(tk.END, line)
 
             messagebox.showinfo("测试完成", f"性能测试完成，共执行 {len(summary)} 个测试用例")
@@ -319,52 +323,56 @@ class CryptoExperimentGUI:
             logger.error(f"导出测试结果失败：{str(e)}", exc_info=True)
 
     def generate_analysis_chart(self):
-        """生成分析图表"""
+        """Generate analysis chart (with English labels)"""
         if not self.tester.results:
-            messagebox.showwarning("警告", "没有可用的测试结果")
+            messagebox.showwarning("Warning", "No available test results.")
             return
 
         try:
             analysis_type = self.analysis_type.get()
             msg_size = int(self.analysis_msg_size.get())
 
-            # 清空图表
+            # Clear the figure
             self.figure.clear()
 
-            # 筛选指定消息大小的结果
+            # Filter results for the selected message size
             filtered_results = [
                 result for result in self.tester.get_summary()
                 if result["message_size"] == msg_size
             ]
 
             if not filtered_results:
-                messagebox.showwarning("警告", f"没有找到消息大小为 {msg_size} 字节的测试结果")
+                messagebox.showwarning("Warning", f"No test results found for message size {msg_size} bytes.")
                 return
 
-            # 按算法分组
+            # Group by algorithm
             algorithms = sorted(list(set(r["algorithm"] for r in filtered_results)))
             key_params = sorted(list(set(r["key_param"] for r in filtered_results)))
 
-            # 根据分析类型选择数据字段
+            # Select data field and y-axis label based on analysis type
             if analysis_type == "密钥生成时间":
                 data_field = "avg_key_gen_time_ms"
-                y_label = "平均密钥生成时间 (毫秒)"
+                y_label = "Average Key Generation Time (ms)"
+                chart_title = f"Key Generation Time Comparison (Message Size: {msg_size} bytes)"
             elif analysis_type == "签名生成时间":
                 data_field = "avg_sign_time_ms"
-                y_label = "平均签名生成时间 (毫秒)"
+                y_label = "Average Signing Time (ms)"
+                chart_title = f"Signing Time Comparison (Message Size: {msg_size} bytes)"
             elif analysis_type == "签名验证时间":
                 data_field = "avg_verify_time_ms"
-                y_label = "平均签名验证时间 (毫秒)"
+                y_label = "Average Verification Time (ms)"
+                chart_title = f"Verification Time Comparison (Message Size: {msg_size} bytes)"
             else:  # 签名长度
                 data_field = "avg_signature_length_bytes"
-                y_label = "平均签名长度 (字节)"
+                y_label = "Average Signature Length (bytes)"
+                chart_title = f"Signature Length Comparison (Message Size: {msg_size} bytes)"
 
-            # 创建图表
+            # Create the chart
             ax = self.figure.add_subplot(111)
             x = np.arange(len(algorithms))
-            width = 0.8 / len(key_params)  # 每个参数的条形宽度
+            width = 0.8 / len(key_params)  # Bar width for each key param
 
-            # 为每个密钥参数绘制条形图
+            # Draw bars for each key param
             for i, param in enumerate(key_params):
                 param_data = [
                     next((r[data_field] for r in filtered_results
@@ -373,20 +381,20 @@ class CryptoExperimentGUI:
                 ]
                 ax.bar(x + i * width - 0.4 + width / 2, param_data, width, label=str(param))
 
-            # 设置图表属性
+            # Set chart properties
             ax.set_ylabel(y_label)
-            ax.set_title(f"{analysis_type}对比 (消息大小: {msg_size} 字节)")
+            ax.set_title(chart_title)
             ax.set_xticks(x)
             ax.set_xticklabels(algorithms)
-            ax.legend(title="密钥参数")
+            ax.legend(title="Key Parameter", loc="best", fontsize=12, frameon=True)
 
-            # 显示图表
+            # Show the chart
             self.figure.tight_layout()
             self.canvas.draw()
 
         except Exception as e:
-            messagebox.showerror("错误", f"生成图表失败：{str(e)}")
-            logger.error(f"生成分析图表失败：{str(e)}", exc_info=True)
+            messagebox.showerror("Error", f"Failed to generate chart: {str(e)}")
+            logger.error(f"Failed to generate analysis chart: {str(e)}", exc_info=True)
 
 
 if __name__ == "__main__":
