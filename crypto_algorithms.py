@@ -1,19 +1,34 @@
 import time
+import os
+import json
+import hmac
+import hashlib
+import numpy as np
+from typing import List, Dict, Any
 from Crypto.PublicKey import RSA, DSA, ECC
 from Crypto.Signature import pkcs1_15, DSS
 from Crypto.Hash import SHA256
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.backends import default_backend
+
 import logging
-import json
-import numpy as np
-from typing import List, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
+try:
+    # 尝试导入 Open Quantum Safe 的 Python 绑定
+    # 新版包名为 oqs
+    import oqs
+    OQS_AVAILABLE = True
+    logger.info("oqs (liboqs-python) 模块已成功导入.")
+except ImportError:
+    oqs = None  # 如果导入失败，将 oqs 设为 None
+    OQS_AVAILABLE = False
+    logger.warning("未安装 oqs (liboqs-python) 模块，后量子算法功能将不可用.")
 
 # ------------------------- SM2 实现（使用 SECP256K1 曲线） -------------------------
 class SM2Handler:
@@ -410,3 +425,82 @@ class PerformanceTester:
                 "avg_signature_length_bytes": round(result["signature_length"]["avg"], 1)
             })
         return summary
+
+# ========== PQC算法 ==========
+class PQCHandler:
+    def __init__(self, alg="Dilithium2"):
+        if not OQS_AVAILABLE:
+            raise RuntimeError(f"当前环境不支持 {alg} 后量子算法（oqs未安装或导入失败）")
+        if alg not in oqs.get_enabled_sig_mechanisms():
+            raise ValueError(f"OQS 库不支持算法: {alg}. 可用算法: {oqs.get_enabled_sig_mechanisms()}")
+        self.alg = alg
+        logger.info(f"初始化 PQC Handler for algorithm: {alg}")
+
+    def generate_keys_and_sign(self, message):
+        """生成密钥对并立即签名（当前oqs版本只支持这种方式）"""
+        if not OQS_AVAILABLE:
+            raise RuntimeError("后量子算法模块不可用.")
+        try:
+            with oqs.Signature(self.alg) as signer:
+                public_key = signer.generate_keypair()
+                private_key = signer.export_secret_key()
+                signature = signer.sign(message.encode())
+            logger.debug(f"PQC密钥生成并签名成功: {self.alg}")
+            return private_key, public_key, signature.hex()
+        except Exception as e:
+            logger.error(f"PQC密钥生成或签名失败 ({self.alg}): {str(e)}", exc_info=True)
+            raise
+
+    def verify(self, public_key, message, signature_hex):
+        if not OQS_AVAILABLE:
+            raise RuntimeError("后量子算法模块不可用.")
+        try:
+            with oqs.Signature(self.alg) as verifier:
+                result = verifier.verify(message.encode(), bytes.fromhex(signature_hex), public_key)
+            logger.debug(f"PQC签名验证通过 ({self.alg})")
+            return result
+        except Exception as e:
+            logger.warning(f"PQC签名验证失败 ({self.alg}): {str(e)}", exc_info=True)
+            return False
+
+# ========== HMAC ==========
+def hmac_sha256(key: bytes, message: str):
+    return hmac.new(key, message.encode(), hashlib.sha256).hexdigest()
+
+# ========== PBKDF2 ==========
+def derive_key(password: str, salt: bytes, length=32, iterations=100_000):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=length,
+        salt=salt,
+        iterations=iterations,
+        backend=default_backend()
+    )
+    return kdf.derive(password.encode())
+
+# ========== AES-GCM加密私钥存储 ==========
+def encrypt_private_key(private_key_bytes: bytes, password: str):
+    salt = os.urandom(16)
+    key = derive_key(password, salt)
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, private_key_bytes, None)
+    return salt + nonce + ciphertext
+
+def decrypt_private_key(encrypted: bytes, password: str):
+    salt = encrypted[:16]
+    nonce = encrypted[16:28]
+    ciphertext = encrypted[28:]
+    key = derive_key(password, salt)
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ciphertext, None)
+
+def save_private_key_encrypted(private_key_bytes, filename, password):
+    encrypted = encrypt_private_key(private_key_bytes, password)
+    with open(filename, "wb") as f:
+        f.write(encrypted)
+
+def load_private_key_encrypted(filename, password):
+    with open(filename, "rb") as f:
+        encrypted = f.read()
+    return decrypt_private_key(encrypted, password)
