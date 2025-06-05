@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 try:
     # 尝试导入 Open Quantum Safe 的 Python 绑定
-    # 新版包名为 oqs
+    # 现在已确认，安装的 liboqs-python 包提供了名为 'oqs' 的模块
     import oqs
     OQS_AVAILABLE = True
     logger.info("oqs (liboqs-python) 模块已成功导入.")
@@ -429,39 +429,58 @@ class PerformanceTester:
 # ========== PQC算法 ==========
 class PQCHandler:
     def __init__(self, alg="Dilithium2"):
+        # Ensure we are using the module-level 'oqs'
+        # This __init__ is expected to be called only if OQS_AVAILABLE is True,
+        # meaning the module-level 'oqs' variable is the successfully imported module.
         if not OQS_AVAILABLE:
-            raise RuntimeError(f"当前环境不支持 {alg} 后量子算法（oqs未安装或导入失败）")
-        if alg not in oqs.get_enabled_sig_mechanisms():
-            raise ValueError(f"OQS 库不支持算法: {alg}. 可用算法: {oqs.get_enabled_sig_mechanisms()}")
+            # This case should ideally be prevented by the calling code (e.g., in gui_interface.py)
+            # which checks OQS_AVAILABLE before instantiating PQCHandler.
+            raise RuntimeError("PQCHandler instantiated but OQS is not available. "
+                               "This indicates a logic error in the calling code.")
+        
+        # Assign the module-level 'oqs' to self.oqs for use in this instance.
+        # 'oqs' here refers to the variable defined at the module level.
+        self.oqs = oqs 
         self.alg = alg
-        logger.info(f"初始化 PQC Handler for algorithm: {alg}")
+
+        # The check now uses self.oqs (which refers to the module-level 'oqs').
+        # If the module-level 'oqs' (which made OQS_AVAILABLE True) 
+        # genuinely lacks 'get_enabled_sig_mechanisms', then the issue
+        # lies with the installed 'oqs' library itself (e.g., version, corruption).
+        
+        # It's good practice to check for the attribute's existence before calling it,
+        # especially if library versions might vary.
+        if not hasattr(self.oqs, 'get_enabled_sig_mechanisms'):
+            logger.error(
+                "The 'oqs' module was imported (OQS_AVAILABLE is True), but it is missing the "
+                "'get_enabled_sig_mechanisms' attribute. This strongly suggests an issue with "
+                "the installed 'oqs' library (e.g., incorrect version or incomplete installation). "
+                "Post-quantum cryptography features may not work as expected."
+            )
+            # Raising an AttributeError here makes the problem explicit.
+            raise AttributeError(
+                "The 'oqs' module is missing the 'get_enabled_sig_mechanisms' attribute. "
+                "Please check your liboqs-python installation and version."
+            )
+
+        enabled_mechanisms = self.oqs.get_enabled_sig_mechanisms()
+        if alg not in enabled_mechanisms:
+            raise ValueError(f"OQS 库不支持算法: {alg}. 可用算法: {enabled_mechanisms}")
 
     def generate_keys_and_sign(self, message):
-        """生成密钥对并立即签名（当前oqs版本只支持这种方式）"""
-        if not OQS_AVAILABLE:
-            raise RuntimeError("后量子算法模块不可用.")
-        try:
-            with oqs.Signature(self.alg) as signer:
-                public_key = signer.generate_keypair()
-                private_key = signer.export_secret_key()
-                signature = signer.sign(message.encode())
-            logger.debug(f"PQC密钥生成并签名成功: {self.alg}")
-            return private_key, public_key, signature.hex()
-        except Exception as e:
-            logger.error(f"PQC密钥生成或签名失败 ({self.alg}): {str(e)}", exc_info=True)
-            raise
+        with self.oqs.Signature(self.alg) as signer:
+            public_key = signer.generate_keypair()
+            secret_key = signer.export_secret_key()
+            signature = signer.sign(message.encode())
+        # 注意：secret_key 和 public_key 都是 bytes 类型
+        # 为了兼容你的界面，返回 hex 字符串
+        return secret_key.hex(), public_key.hex(), signature.hex()
 
     def verify(self, public_key, message, signature_hex):
-        if not OQS_AVAILABLE:
-            raise RuntimeError("后量子算法模块不可用.")
-        try:
-            with oqs.Signature(self.alg) as verifier:
-                result = verifier.verify(message.encode(), bytes.fromhex(signature_hex), public_key)
-            logger.debug(f"PQC签名验证通过 ({self.alg})")
-            return result
-        except Exception as e:
-            logger.warning(f"PQC签名验证失败 ({self.alg}): {str(e)}", exc_info=True)
-            return False
+        with self.oqs.Signature(self.alg) as verifier:
+            signature = bytes.fromhex(signature_hex)
+            public_key_bytes = bytes.fromhex(public_key) if isinstance(public_key, str) else public_key
+            return verifier.verify(message.encode(), signature, public_key_bytes)
 
 # ========== HMAC ==========
 def hmac_sha256(key: bytes, message: str):
